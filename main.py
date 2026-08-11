@@ -197,6 +197,45 @@ async def check_duplicate(patient_id: str, db: Session = Depends(get_db)):
         logger.error(f"Error checking duplicate: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@app.post("/webhook/vapi")
+async def vapi_webhook(request_body: dict, db: Session = Depends(get_db)):
+    """Webhook for Vapi voice agent callbacks"""
+    try:
+        event = request_body.get("event")
+
+        if event == "end-of-call":
+            # Handle end of call
+            summary = request_body.get("summary", {})
+            logger.info(f"Call ended. Summary: {summary}")
+            return {"success": True}
+
+        elif event == "save-patient":
+            # Handle patient data from voice agent
+            data = request_body.get("data", {})
+
+            # Convert date format if needed (MM/DD/YYYY -> YYYY-MM-DD)
+            if "date_of_birth" in data:
+                dob = data["date_of_birth"]
+                if "/" in dob:
+                    parts = dob.split("/")
+                    if len(parts) == 3:
+                        data["date_of_birth"] = f"{parts[2]}-{parts[0]}-{parts[1]}"
+
+            patient_data = schemas.PatientCreate(**data)
+            new_patient = crud.create_patient(db, patient_data)
+            logger.info(f"Patient saved via webhook: {new_patient.patient_id}")
+
+            return {
+                "success": True,
+                "patient_id": new_patient.patient_id,
+                "message": f"Patient {new_patient.first_name} registered successfully"
+            }
+
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Webhook error: {str(e)}")
+        return {"success": False, "error": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8001))
