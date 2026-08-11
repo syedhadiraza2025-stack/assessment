@@ -280,14 +280,68 @@ async def vapi_save_patient(request_body: dict, db: Session = Depends(get_db)):
     Dedicated Vapi webhook endpoint for save_patient tool calls.
     Accepts Vapi custom-tool payload and saves patient to database.
 
-    Supports both Vapi payload formats:
-    1. tool_call["name"] + tool_call["arguments"]
-    2. tool_call["function"]["name"] + tool_call["function"]["arguments"]
+    Supports multiple Vapi payload formats:
+    1. Direct arguments: {first_name, last_name, ...}
+    2. Webhook wrapper: {message: {toolCallList: [...]}}
     """
     try:
         logger.info("🔔 Vapi save-patient webhook received")
+        logger.info(f"Request body keys: {list(request_body.keys())}")
 
-        # Extract message from Vapi wrapper
+        # Check if this is a direct custom-tool request (no wrapper)
+        # Vapi custom tools send arguments directly
+        if "message" not in request_body and ("first_name" in request_body or "arguments" in request_body):
+            logger.info("📍 Detected direct Vapi custom-tool request format")
+
+            # Extract arguments - could be direct or nested
+            arguments = request_body if "first_name" in request_body else request_body.get("arguments", {})
+
+            if not arguments:
+                logger.error("No patient arguments found")
+                return {"error": "Missing patient data"}
+
+            logger.info(f"Processing direct tool call with fields: {list(arguments.keys())}")
+
+            try:
+                # Make a mutable copy of arguments for normalization
+                normalized_args = dict(arguments)
+
+                # Convert date_of_birth from MM/DD/YYYY to YYYY-MM-DD if needed
+                dob = normalized_args.get("date_of_birth", "")
+                if dob and "/" in str(dob):
+                    try:
+                        parts = str(dob).split("/")
+                        if len(parts) == 3:
+                            normalized_args["date_of_birth"] = f"{parts[2]}-{parts[0]}-{parts[1]}"
+                            logger.info(f"Converted date_of_birth from {dob} to {normalized_args['date_of_birth']}")
+                    except Exception as date_error:
+                        logger.warning(f"Failed to convert date {dob}: {str(date_error)}")
+
+                # Check for existing patient by phone number
+                phone_number = normalized_args.get("phone_number")
+                if phone_number:
+                    existing = crud.get_patient_by_phone(db, phone_number)
+                    if existing:
+                        logger.warning(f"Patient already exists with phone {phone_number}")
+                        return {"error": f"Patient with phone {phone_number} already exists"}
+
+                # Validate and create patient
+                patient_data = schemas.PatientCreate(**normalized_args)
+                logger.info(f"✅ Validation passed for patient: {normalized_args.get('first_name')} {normalized_args.get('last_name')}")
+
+                new_patient = crud.create_patient(db, patient_data)
+                logger.info(f"✅ Patient saved successfully: {new_patient.patient_id} - {new_patient.first_name} {new_patient.last_name}")
+
+                return {"success": True, "patient_id": new_patient.patient_id, "message": f"Patient {new_patient.first_name} {new_patient.last_name} registered successfully"}
+
+            except ValueError as ve:
+                logger.error(f"Validation error: {str(ve)}")
+                return {"error": f"Validation failed: {str(ve)}"}
+            except Exception as e:
+                logger.error(f"Error saving patient: {str(e)}")
+                return {"error": f"Patient could not be saved: {str(e)}"}
+
+        # Original webhook format with message wrapper
         message = request_body.get("message", {})
         if not message:
             logger.error("No 'message' in request body")
