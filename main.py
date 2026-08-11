@@ -274,6 +274,129 @@ async def vapi_webhook(request_body: dict, db: Session = Depends(get_db)):
         logger.error(f"Webhook error: {str(e)}")
         return {"success": False, "error": str(e)}
 
+@app.post("/vapi/save-patient")
+async def vapi_save_patient(request_body: dict, db: Session = Depends(get_db)):
+    """
+    Dedicated Vapi webhook endpoint for save_patient tool calls.
+    Accepts Vapi custom-tool payload and saves patient to database.
+
+    Supports both Vapi payload formats:
+    1. tool_call["name"] + tool_call["arguments"]
+    2. tool_call["function"]["name"] + tool_call["function"]["arguments"]
+    """
+    try:
+        logger.info("🔔 Vapi webhook received")
+
+        # Extract message from Vapi wrapper
+        message = request_body.get("message", {})
+        if not message:
+            logger.error("No 'message' in request body")
+            return {
+                "results": [{
+                    "toolCallId": "unknown",
+                    "error": "Invalid payload: missing 'message'"
+                }]
+            }
+
+        # Extract tool call list
+        tool_call_list = message.get("toolCallList", [])
+        if not tool_call_list:
+            logger.error("No tool calls in message")
+            return {
+                "results": [{
+                    "toolCallId": "unknown",
+                    "error": "Invalid payload: no toolCallList"
+                }]
+            }
+
+        results = []
+
+        # Process each tool call
+        for tool_call in tool_call_list:
+            tool_call_id = tool_call.get("id")
+            if not tool_call_id:
+                logger.error("Tool call missing 'id'")
+                results.append({
+                    "toolCallId": "unknown",
+                    "error": "Tool call missing id"
+                })
+                continue
+
+            # Support both Vapi payload formats
+            tool_name = None
+            arguments = None
+
+            # Format 1: direct name + arguments
+            if "name" in tool_call and tool_call.get("name") == "save_patient":
+                tool_name = tool_call.get("name")
+                arguments = tool_call.get("arguments", {})
+
+            # Format 2: function.name + function.arguments
+            elif "function" in tool_call:
+                function = tool_call.get("function", {})
+                if function.get("name") == "save_patient":
+                    tool_name = function.get("name")
+                    arguments = function.get("arguments", {})
+
+            # Check if we found save_patient
+            if tool_name != "save_patient":
+                logger.warning(f"Tool call is not save_patient, skipping: {tool_call.get('name') or tool_call.get('function', {}).get('name')}")
+                results.append({
+                    "toolCallId": tool_call_id,
+                    "error": f"Unknown tool: {tool_name}"
+                })
+                continue
+
+            if not arguments:
+                logger.error(f"Tool call {tool_call_id} missing arguments")
+                results.append({
+                    "toolCallId": tool_call_id,
+                    "error": "Missing arguments"
+                })
+                continue
+
+            logger.info(f"Processing save_patient call {tool_call_id} with fields: {list(arguments.keys())}")
+
+            try:
+                # Validate arguments against existing PatientCreate schema
+                patient_data = schemas.PatientCreate(**arguments)
+                logger.info(f"✅ Validation passed for patient: {arguments.get('first_name')} {arguments.get('last_name')}")
+
+                # Reuse existing CRUD logic
+                new_patient = crud.create_patient(db, patient_data)
+                logger.info(f"✅ Patient saved successfully: {new_patient.patient_id} - {new_patient.first_name} {new_patient.last_name}")
+
+                results.append({
+                    "toolCallId": tool_call_id,
+                    "result": "Patient saved successfully"
+                })
+
+            except ValueError as ve:
+                logger.error(f"Validation error for {tool_call_id}: {str(ve)}")
+                results.append({
+                    "toolCallId": tool_call_id,
+                    "error": f"Validation failed: {str(ve)}"
+                })
+            except Exception as patient_error:
+                logger.error(f"Database error for {tool_call_id}: {str(patient_error)}")
+                results.append({
+                    "toolCallId": tool_call_id,
+                    "error": f"Database error: {str(patient_error)}"
+                })
+
+        # Return Vapi-compliant response
+        return {"results": results}
+
+    except Exception as e:
+        logger.error(f"Vapi webhook error: {str(e)}")
+        return {
+            "results": [{
+                "toolCallId": "unknown",
+                "error": f"Server error: {str(e)}"
+            }]
+        }
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8001))
