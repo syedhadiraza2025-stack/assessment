@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(curl http://localhost:8000/health)",
+      "PowerShell(Stop-Process -Name python -Force -ErrorAction SilentlyContinue)",
+      "PowerShell(cd \"C:\\\\Users\\\\hadi\\\\Documents\\\\ai_services\\\\assessment\"; $env:PORT=8001; python main.py)",
+      "PowerShell(curl http://localhost:8001/health -ErrorAction SilentlyContinue)"
+    ]
+  }
+}
