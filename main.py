@@ -285,7 +285,7 @@ async def vapi_save_patient(request_body: dict, db: Session = Depends(get_db)):
     2. tool_call["function"]["name"] + tool_call["function"]["arguments"]
     """
     try:
-        logger.info("🔔 Vapi webhook received")
+        logger.info("🔔 Vapi save-patient webhook received")
 
         # Extract message from Vapi wrapper
         message = request_body.get("message", {})
@@ -343,7 +343,7 @@ async def vapi_save_patient(request_body: dict, db: Session = Depends(get_db)):
                 logger.warning(f"Tool call is not save_patient, skipping: {tool_call.get('name') or tool_call.get('function', {}).get('name')}")
                 results.append({
                     "toolCallId": tool_call_id,
-                    "error": f"Unknown tool: {tool_name}"
+                    "error": f"Unknown tool: {tool_name or 'unknown'}"
                 })
                 continue
 
@@ -358,9 +358,36 @@ async def vapi_save_patient(request_body: dict, db: Session = Depends(get_db)):
             logger.info(f"Processing save_patient call {tool_call_id} with fields: {list(arguments.keys())}")
 
             try:
+                # Make a mutable copy of arguments for normalization
+                normalized_args = dict(arguments)
+
+                # Convert date_of_birth from MM/DD/YYYY to YYYY-MM-DD if needed
+                dob = normalized_args.get("date_of_birth", "")
+                if dob and "/" in str(dob):
+                    try:
+                        parts = str(dob).split("/")
+                        if len(parts) == 3:
+                            # Convert MM/DD/YYYY to YYYY-MM-DD
+                            normalized_args["date_of_birth"] = f"{parts[2]}-{parts[0]}-{parts[1]}"
+                            logger.info(f"Converted date_of_birth from {dob} to {normalized_args['date_of_birth']}")
+                    except Exception as date_error:
+                        logger.warning(f"Failed to convert date {dob}: {str(date_error)}")
+
+                # Check for existing patient by phone number (duplicate detection)
+                phone_number = normalized_args.get("phone_number")
+                if phone_number:
+                    existing = crud.get_patient_by_phone(db, phone_number)
+                    if existing:
+                        logger.warning(f"Patient already exists with phone {phone_number}")
+                        results.append({
+                            "toolCallId": tool_call_id,
+                            "error": f"Patient with phone {phone_number} already exists"
+                        })
+                        continue
+
                 # Validate arguments against existing PatientCreate schema
-                patient_data = schemas.PatientCreate(**arguments)
-                logger.info(f"✅ Validation passed for patient: {arguments.get('first_name')} {arguments.get('last_name')}")
+                patient_data = schemas.PatientCreate(**normalized_args)
+                logger.info(f"✅ Validation passed for patient: {normalized_args.get('first_name')} {normalized_args.get('last_name')}")
 
                 # Reuse existing CRUD logic
                 new_patient = crud.create_patient(db, patient_data)
@@ -375,16 +402,16 @@ async def vapi_save_patient(request_body: dict, db: Session = Depends(get_db)):
                 logger.error(f"Validation error for {tool_call_id}: {str(ve)}")
                 results.append({
                     "toolCallId": tool_call_id,
-                    "error": f"Validation failed: {str(ve)}"
+                    "error": f"Patient could not be saved: {str(ve)}"
                 })
             except Exception as patient_error:
-                logger.error(f"Database error for {tool_call_id}: {str(patient_error)}")
+                logger.error(f"Error for {tool_call_id}: {str(patient_error)}")
                 results.append({
                     "toolCallId": tool_call_id,
-                    "error": f"Database error: {str(patient_error)}"
+                    "error": f"Patient could not be saved: {str(patient_error)}"
                 })
 
-        # Return Vapi-compliant response
+        # Return Vapi-compliant response (always HTTP 200)
         return {"results": results}
 
     except Exception as e:
@@ -392,7 +419,7 @@ async def vapi_save_patient(request_body: dict, db: Session = Depends(get_db)):
         return {
             "results": [{
                 "toolCallId": "unknown",
-                "error": f"Server error: {str(e)}"
+                "error": f"Invalid request: {str(e)}"
             }]
         }
 
