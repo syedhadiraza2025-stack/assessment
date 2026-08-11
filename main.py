@@ -199,39 +199,77 @@ async def check_duplicate(patient_id: str, db: Session = Depends(get_db)):
 
 @app.post("/webhook/vapi")
 async def vapi_webhook(request_body: dict, db: Session = Depends(get_db)):
-    """Webhook for Vapi voice agent callbacks"""
+    """Webhook for Vapi voice agent callbacks - saves patient data from call"""
     try:
-        event = request_body.get("event")
+        logger.info(f"Vapi Webhook received")
 
-        if event == "end-of-call":
-            # Handle end of call
-            summary = request_body.get("summary", {})
-            logger.info(f"Call ended. Summary: {summary}")
-            return {"success": True}
+        # Extract call data from Vapi webhook
+        messages = request_body.get("messages", [])
+        call_summary = request_body.get("summary", {})
+        structured_data = request_body.get("structuredData", {})
 
-        elif event == "save-patient":
-            # Handle patient data from voice agent
-            data = request_body.get("data", {})
+        # If structured data is provided, use it directly
+        if structured_data and isinstance(structured_data, dict):
+            data = structured_data
+            logger.info(f"Using structured data from Vapi: {data}")
+        else:
+            # Parse from call summary if available
+            data = call_summary if isinstance(call_summary, dict) else {}
+            logger.info(f"Using call summary: {data}")
 
-            # Convert date format if needed (MM/DD/YYYY -> YYYY-MM-DD)
-            if "date_of_birth" in data:
-                dob = data["date_of_birth"]
-                if "/" in dob:
-                    parts = dob.split("/")
-                    if len(parts) == 3:
-                        data["date_of_birth"] = f"{parts[2]}-{parts[0]}-{parts[1]}"
+        # If we have minimal data, extract from message transcript
+        if not data or len(data) < 3:
+            # Parse from messages transcript
+            transcript = "\n".join([f"{m.get('role', 'unknown')}: {m.get('content', '')}" for m in messages]) if messages else ""
+            logger.info(f"Transcript: {transcript}")
 
+            # Try to extract key fields from transcript
+            data = {
+                "first_name": call_summary.get("first_name") or data.get("first_name", ""),
+                "last_name": call_summary.get("last_name") or data.get("last_name", ""),
+                "date_of_birth": call_summary.get("date_of_birth") or data.get("date_of_birth", ""),
+                "sex": call_summary.get("sex") or data.get("sex", ""),
+                "phone_number": call_summary.get("phone_number") or data.get("phone_number", ""),
+                "address_line_1": call_summary.get("address_line_1") or data.get("address_line_1", ""),
+                "city": call_summary.get("city") or data.get("city", ""),
+                "state": call_summary.get("state") or data.get("state", ""),
+                "zip_code": call_summary.get("zip_code") or data.get("zip_code", ""),
+            }
+
+        # Validate we have required fields
+        required_fields = ["first_name", "last_name", "date_of_birth", "sex", "phone_number", "address_line_1", "city", "state", "zip_code"]
+        missing_fields = [f for f in required_fields if not data.get(f)]
+
+        if missing_fields:
+            logger.warning(f"Missing required fields: {missing_fields}. Data: {data}")
+            return {"success": False, "message": f"Missing required fields: {missing_fields}"}
+
+        # Convert date format MM/DD/YYYY to YYYY-MM-DD
+        dob = data.get("date_of_birth", "")
+        if dob and "/" in dob:
+            try:
+                parts = dob.split("/")
+                if len(parts) == 3:
+                    # Convert MM/DD/YYYY to YYYY-MM-DD
+                    data["date_of_birth"] = f"{parts[2]}-{parts[0]}-{parts[1]}"
+            except:
+                pass
+
+        # Try to create patient
+        try:
             patient_data = schemas.PatientCreate(**data)
             new_patient = crud.create_patient(db, patient_data)
-            logger.info(f"Patient saved via webhook: {new_patient.patient_id}")
+            logger.info(f"✅ Patient saved successfully: {new_patient.patient_id} - {new_patient.first_name} {new_patient.last_name}")
 
             return {
                 "success": True,
                 "patient_id": new_patient.patient_id,
-                "message": f"Patient {new_patient.first_name} registered successfully"
+                "message": f"Patient {new_patient.first_name} {new_patient.last_name} registered successfully"
             }
+        except Exception as patient_error:
+            logger.error(f"Error creating patient: {str(patient_error)}")
+            return {"success": False, "error": f"Patient creation failed: {str(patient_error)}"}
 
-        return {"success": True}
     except Exception as e:
         logger.error(f"Webhook error: {str(e)}")
         return {"success": False, "error": str(e)}
