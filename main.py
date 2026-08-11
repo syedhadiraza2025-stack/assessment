@@ -306,16 +306,41 @@ async def vapi_save_patient(request_body: dict, db: Session = Depends(get_db)):
                 # Make a mutable copy of arguments for normalization
                 normalized_args = dict(arguments)
 
-                # Convert date_of_birth from MM/DD/YYYY to YYYY-MM-DD if needed
+                # Convert date_of_birth to YYYY-MM-DD format (handle multiple input formats)
                 dob = normalized_args.get("date_of_birth", "")
-                if dob and "/" in str(dob):
+                if dob:
                     try:
-                        parts = str(dob).split("/")
+                        parts = str(dob).replace("-", "/").split("/")
                         if len(parts) == 3:
-                            normalized_args["date_of_birth"] = f"{parts[2]}-{parts[0]}-{parts[1]}"
+                            # Detect format: if first part > 12, it's DD-MM-YYYY, else assume MM-DD-YYYY
+                            m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+                            if m > 12:  # First part is day (DD-MM-YYYY format)
+                                normalized_args["date_of_birth"] = f"{y}-{d:02d}-{m:02d}"
+                            else:  # MM-DD-YYYY format
+                                normalized_args["date_of_birth"] = f"{y}-{m:02d}-{d:02d}"
                             logger.info(f"Converted date_of_birth from {dob} to {normalized_args['date_of_birth']}")
                     except Exception as date_error:
                         logger.warning(f"Failed to convert date {dob}: {str(date_error)}")
+
+                # Normalize sex field (capitalize first letter)
+                if "sex" in normalized_args:
+                    sex_value = normalized_args["sex"]
+                    if isinstance(sex_value, str):
+                        # Capitalize: Male, Female, Other, Decline to Answer
+                        sex_lower = sex_value.lower().strip()
+                        if sex_lower == "decline to answer":
+                            normalized_args["sex"] = "Decline to Answer"
+                        elif sex_lower in ["male", "female", "other"]:
+                            normalized_args["sex"] = sex_lower.capitalize()
+                        logger.info(f"Normalized sex from {sex_value} to {normalized_args['sex']}")
+
+                # Clean phone number (remove spaces, dashes, take last 10 digits)
+                if "phone_number" in normalized_args:
+                    phone = str(normalized_args["phone_number"]).replace(" ", "").replace("-", "").replace(".", "")
+                    # Take last 10 digits
+                    phone = phone[-10:] if len(phone) >= 10 else phone
+                    normalized_args["phone_number"] = phone
+                    logger.info(f"Normalized phone_number to {phone}")
 
                 # Check for existing patient by phone number
                 phone_number = normalized_args.get("phone_number")
@@ -415,17 +440,39 @@ async def vapi_save_patient(request_body: dict, db: Session = Depends(get_db)):
                 # Make a mutable copy of arguments for normalization
                 normalized_args = dict(arguments)
 
-                # Convert date_of_birth from MM/DD/YYYY to YYYY-MM-DD if needed
+                # Convert date_of_birth to YYYY-MM-DD format (handle multiple input formats)
                 dob = normalized_args.get("date_of_birth", "")
-                if dob and "/" in str(dob):
+                if dob:
                     try:
-                        parts = str(dob).split("/")
+                        parts = str(dob).replace("-", "/").split("/")
                         if len(parts) == 3:
-                            # Convert MM/DD/YYYY to YYYY-MM-DD
-                            normalized_args["date_of_birth"] = f"{parts[2]}-{parts[0]}-{parts[1]}"
+                            # Detect format: if first part > 12, it's DD-MM-YYYY, else assume MM-DD-YYYY
+                            m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+                            if m > 12:  # First part is day (DD-MM-YYYY format)
+                                normalized_args["date_of_birth"] = f"{y}-{d:02d}-{m:02d}"
+                            else:  # MM-DD-YYYY format
+                                normalized_args["date_of_birth"] = f"{y}-{m:02d}-{d:02d}"
                             logger.info(f"Converted date_of_birth from {dob} to {normalized_args['date_of_birth']}")
                     except Exception as date_error:
                         logger.warning(f"Failed to convert date {dob}: {str(date_error)}")
+
+                # Normalize sex field (capitalize first letter)
+                if "sex" in normalized_args:
+                    sex_value = normalized_args["sex"]
+                    if isinstance(sex_value, str):
+                        sex_lower = sex_value.lower().strip()
+                        if sex_lower == "decline to answer":
+                            normalized_args["sex"] = "Decline to Answer"
+                        elif sex_lower in ["male", "female", "other"]:
+                            normalized_args["sex"] = sex_lower.capitalize()
+                        logger.info(f"Normalized sex from {sex_value} to {normalized_args['sex']}")
+
+                # Clean phone number (remove spaces, dashes, take last 10 digits)
+                if "phone_number" in normalized_args:
+                    phone = str(normalized_args["phone_number"]).replace(" ", "").replace("-", "").replace(".", "")
+                    phone = phone[-10:] if len(phone) >= 10 else phone
+                    normalized_args["phone_number"] = phone
+                    logger.info(f"Normalized phone_number to {phone}")
 
                 # Check for existing patient by phone number (duplicate detection)
                 phone_number = normalized_args.get("phone_number")
