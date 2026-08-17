@@ -1,8 +1,9 @@
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from datetime import date
-from typing import List, Optional
+from sqlalchemy import desc
+from datetime import date, datetime
+from typing import Any, List, Optional
 import logging
 import os
 from dotenv import load_dotenv
@@ -10,7 +11,7 @@ from dotenv import load_dotenv
 import models
 import schemas
 import crud
-from database import engine, get_db
+from database import get_db, init_database, safe_database_url
 
 load_dotenv()
 
@@ -20,7 +21,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-models.Base.metadata.create_all(bind=engine)
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def serialize_record(record: Any) -> dict[str, Any]:
+    return {
+        column.name: _json_value(getattr(record, column.name))
+        for column in record.__table__.columns
+    }
 
 app = FastAPI(
     title="Patient Registration API",
@@ -36,6 +48,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+async def startup() -> None:
+    init_database()
+    logger.info("Database initialized: %s", safe_database_url())
+
 @app.get("/health")
 async def health():
     """Health check endpoint"""
@@ -43,13 +61,26 @@ async def health():
 
 @app.get("/patients")
 async def list_patients(
+    last_name: Optional[str] = Query(None),
+    date_of_birth: Optional[date] = Query(None),
+    phone_number: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db)
 ):
-    """List all patients with optional pagination"""
+    """List patients, optionally filtered by last_name, date_of_birth, or phone_number."""
     try:
-        patients = crud.get_all_patients(db, skip=skip, limit=limit)
+        if last_name or date_of_birth or phone_number:
+            patients = crud.search_patients(
+                db,
+                last_name=last_name,
+                date_of_birth=date_of_birth,
+                phone_number=phone_number,
+                skip=skip,
+                limit=limit,
+            )
+        else:
+            patients = crud.get_all_patients(db, skip=skip, limit=limit)
         logger.info(f"Retrieved {len(patients)} patients")
         return {
             "data": {"patients": [schemas.PatientResponse.model_validate(p).model_dump() for p in patients]},
@@ -157,6 +188,9 @@ async def update_patient(
         }
     except HTTPException:
         raise
+    except ValueError as e:
+        logger.warning(f"Validation error updating patient {patient_id}: {str(e)}")
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.error(f"Error updating patient {patient_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -197,332 +231,108 @@ async def check_duplicate(patient_id: str, db: Session = Depends(get_db)):
         logger.error(f"Error checking duplicate: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/webhook/vapi")
-async def vapi_webhook(request_body: dict, db: Session = Depends(get_db)):
-    """Webhook for Vapi voice agent callbacks - saves patient data from call"""
+
+@app.get("/dashboard/overview")
+async def dashboard_overview(db: Session = Depends(get_db)):
+    """High-level dashboard counters for patient intake and voice-agent activity."""
     try:
-        logger.info(f"Vapi Webhook received")
-
-        # Extract call data from Vapi webhook
-        messages = request_body.get("messages", [])
-        call_summary = request_body.get("summary", {})
-        structured_data = request_body.get("structuredData", {})
-
-        # If structured data is provided, use it directly
-        if structured_data and isinstance(structured_data, dict):
-            data = structured_data
-            logger.info(f"Using structured data from Vapi: {data}")
-        else:
-            # Parse from call summary if available
-            data = call_summary if isinstance(call_summary, dict) else {}
-            logger.info(f"Using call summary: {data}")
-
-        # If we have minimal data, extract from message transcript
-        if not data or len(data) < 3:
-            # Parse from messages transcript
-            transcript = "\n".join([f"{m.get('role', 'unknown')}: {m.get('content', '')}" for m in messages]) if messages else ""
-            logger.info(f"Transcript: {transcript}")
-
-            # Try to extract key fields from transcript
-            data = {
-                "first_name": call_summary.get("first_name") or data.get("first_name", ""),
-                "last_name": call_summary.get("last_name") or data.get("last_name", ""),
-                "date_of_birth": call_summary.get("date_of_birth") or data.get("date_of_birth", ""),
-                "sex": call_summary.get("sex") or data.get("sex", ""),
-                "phone_number": call_summary.get("phone_number") or data.get("phone_number", ""),
-                "address_line_1": call_summary.get("address_line_1") or data.get("address_line_1", ""),
-                "city": call_summary.get("city") or data.get("city", ""),
-                "state": call_summary.get("state") or data.get("state", ""),
-                "zip_code": call_summary.get("zip_code") or data.get("zip_code", ""),
-            }
-
-        # Validate we have required fields
-        required_fields = ["first_name", "last_name", "date_of_birth", "sex", "phone_number", "address_line_1", "city", "state", "zip_code"]
-        missing_fields = [f for f in required_fields if not data.get(f)]
-
-        if missing_fields:
-            logger.warning(f"Missing required fields: {missing_fields}. Data: {data}")
-            return {"success": False, "message": f"Missing required fields: {missing_fields}"}
-
-        # Convert date format MM/DD/YYYY to YYYY-MM-DD
-        dob = data.get("date_of_birth", "")
-        if dob and "/" in dob:
-            try:
-                parts = dob.split("/")
-                if len(parts) == 3:
-                    # Convert MM/DD/YYYY to YYYY-MM-DD
-                    data["date_of_birth"] = f"{parts[2]}-{parts[0]}-{parts[1]}"
-            except:
-                pass
-
-        # Try to create patient
-        try:
-            patient_data = schemas.PatientCreate(**data)
-            new_patient = crud.create_patient(db, patient_data)
-            logger.info(f"✅ Patient saved successfully: {new_patient.patient_id} - {new_patient.first_name} {new_patient.last_name}")
-
-            return {
-                "success": True,
-                "patient_id": new_patient.patient_id,
-                "message": f"Patient {new_patient.first_name} {new_patient.last_name} registered successfully"
-            }
-        except Exception as patient_error:
-            logger.error(f"Error creating patient: {str(patient_error)}")
-            return {"success": False, "error": f"Patient creation failed: {str(patient_error)}"}
-
-    except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        return {"success": False, "error": str(e)}
-
-@app.post("/vapi/save-patient")
-async def vapi_save_patient(request_body: dict, db: Session = Depends(get_db)):
-    """
-    Dedicated Vapi webhook endpoint for save_patient tool calls.
-    Accepts Vapi custom-tool payload and saves patient to database.
-
-    Supports multiple Vapi payload formats:
-    1. Direct arguments: {first_name, last_name, ...}
-    2. Webhook wrapper: {message: {toolCallList: [...]}}
-    """
-    try:
-        logger.info("🔔 Vapi save-patient webhook received")
-        logger.info(f"Request body keys: {list(request_body.keys())}")
-
-        # Check if this is a direct custom-tool request (no wrapper)
-        # Vapi custom tools send arguments directly
-        if "message" not in request_body and ("first_name" in request_body or "arguments" in request_body):
-            logger.info("📍 Detected direct Vapi custom-tool request format")
-
-            # Extract arguments - could be direct or nested
-            arguments = request_body if "first_name" in request_body else request_body.get("arguments", {})
-
-            if not arguments:
-                logger.error("No patient arguments found")
-                return {"error": "Missing patient data"}
-
-            logger.info(f"Processing direct tool call with fields: {list(arguments.keys())}")
-
-            try:
-                # Make a mutable copy of arguments for normalization
-                normalized_args = dict(arguments)
-
-                # Convert date_of_birth to YYYY-MM-DD format (handle multiple input formats)
-                dob = normalized_args.get("date_of_birth", "")
-                if dob:
-                    try:
-                        parts = str(dob).replace("-", "/").split("/")
-                        if len(parts) == 3:
-                            # Detect format: if first part > 12, it's DD-MM-YYYY, else assume MM-DD-YYYY
-                            m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
-                            if m > 12:  # First part is day (DD-MM-YYYY format)
-                                normalized_args["date_of_birth"] = f"{y}-{d:02d}-{m:02d}"
-                            else:  # MM-DD-YYYY format
-                                normalized_args["date_of_birth"] = f"{y}-{m:02d}-{d:02d}"
-                            logger.info(f"Converted date_of_birth from {dob} to {normalized_args['date_of_birth']}")
-                    except Exception as date_error:
-                        logger.warning(f"Failed to convert date {dob}: {str(date_error)}")
-
-                # Normalize sex field (capitalize first letter)
-                if "sex" in normalized_args:
-                    sex_value = normalized_args["sex"]
-                    if isinstance(sex_value, str):
-                        # Capitalize: Male, Female, Other, Decline to Answer
-                        sex_lower = sex_value.lower().strip()
-                        if sex_lower == "decline to answer":
-                            normalized_args["sex"] = "Decline to Answer"
-                        elif sex_lower in ["male", "female", "other"]:
-                            normalized_args["sex"] = sex_lower.capitalize()
-                        logger.info(f"Normalized sex from {sex_value} to {normalized_args['sex']}")
-
-                # Clean phone number (remove spaces, dashes, take last 10 digits)
-                if "phone_number" in normalized_args:
-                    phone = str(normalized_args["phone_number"]).replace(" ", "").replace("-", "").replace(".", "")
-                    # Take last 10 digits
-                    phone = phone[-10:] if len(phone) >= 10 else phone
-                    normalized_args["phone_number"] = phone
-                    logger.info(f"Normalized phone_number to {phone}")
-
-                # Check for existing patient by phone number
-                phone_number = normalized_args.get("phone_number")
-                if phone_number:
-                    existing = crud.get_patient_by_phone(db, phone_number)
-                    if existing:
-                        logger.warning(f"Patient already exists with phone {phone_number}")
-                        return {"error": f"Patient with phone {phone_number} already exists"}
-
-                # Validate and create patient
-                patient_data = schemas.PatientCreate(**normalized_args)
-                logger.info(f"✅ Validation passed for patient: {normalized_args.get('first_name')} {normalized_args.get('last_name')}")
-
-                new_patient = crud.create_patient(db, patient_data)
-                logger.info(f"✅ Patient saved successfully: {new_patient.patient_id} - {new_patient.first_name} {new_patient.last_name}")
-
-                return {"success": True, "patient_id": new_patient.patient_id, "message": f"Patient {new_patient.first_name} {new_patient.last_name} registered successfully"}
-
-            except ValueError as ve:
-                logger.error(f"Validation error: {str(ve)}")
-                return {"error": f"Validation failed: {str(ve)}"}
-            except Exception as e:
-                logger.error(f"Error saving patient: {str(e)}")
-                return {"error": f"Patient could not be saved: {str(e)}"}
-
-        # Original webhook format with message wrapper
-        message = request_body.get("message", {})
-        if not message:
-            logger.error("No 'message' in request body")
-            return {
-                "results": [{
-                    "toolCallId": "unknown",
-                    "error": "Invalid payload: missing 'message'"
-                }]
-            }
-
-        # Extract tool call list
-        tool_call_list = message.get("toolCallList", [])
-        if not tool_call_list:
-            logger.error("No tool calls in message")
-            return {
-                "results": [{
-                    "toolCallId": "unknown",
-                    "error": "Invalid payload: no toolCallList"
-                }]
-            }
-
-        results = []
-
-        # Process each tool call
-        for tool_call in tool_call_list:
-            tool_call_id = tool_call.get("id")
-            if not tool_call_id:
-                logger.error("Tool call missing 'id'")
-                results.append({
-                    "toolCallId": "unknown",
-                    "error": "Tool call missing id"
-                })
-                continue
-
-            # Support both Vapi payload formats
-            tool_name = None
-            arguments = None
-
-            # Format 1: direct name + arguments
-            if "name" in tool_call and tool_call.get("name") == "save_patient":
-                tool_name = tool_call.get("name")
-                arguments = tool_call.get("arguments", {})
-
-            # Format 2: function.name + function.arguments
-            elif "function" in tool_call:
-                function = tool_call.get("function", {})
-                if function.get("name") == "save_patient":
-                    tool_name = function.get("name")
-                    arguments = function.get("arguments", {})
-
-            # Check if we found save_patient
-            if tool_name != "save_patient":
-                logger.warning(f"Tool call is not save_patient, skipping: {tool_call.get('name') or tool_call.get('function', {}).get('name')}")
-                results.append({
-                    "toolCallId": tool_call_id,
-                    "error": f"Unknown tool: {tool_name or 'unknown'}"
-                })
-                continue
-
-            if not arguments:
-                logger.error(f"Tool call {tool_call_id} missing arguments")
-                results.append({
-                    "toolCallId": tool_call_id,
-                    "error": "Missing arguments"
-                })
-                continue
-
-            logger.info(f"Processing save_patient call {tool_call_id} with fields: {list(arguments.keys())}")
-
-            try:
-                # Make a mutable copy of arguments for normalization
-                normalized_args = dict(arguments)
-
-                # Convert date_of_birth to YYYY-MM-DD format (handle multiple input formats)
-                dob = normalized_args.get("date_of_birth", "")
-                if dob:
-                    try:
-                        parts = str(dob).replace("-", "/").split("/")
-                        if len(parts) == 3:
-                            # Detect format: if first part > 12, it's DD-MM-YYYY, else assume MM-DD-YYYY
-                            m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
-                            if m > 12:  # First part is day (DD-MM-YYYY format)
-                                normalized_args["date_of_birth"] = f"{y}-{d:02d}-{m:02d}"
-                            else:  # MM-DD-YYYY format
-                                normalized_args["date_of_birth"] = f"{y}-{m:02d}-{d:02d}"
-                            logger.info(f"Converted date_of_birth from {dob} to {normalized_args['date_of_birth']}")
-                    except Exception as date_error:
-                        logger.warning(f"Failed to convert date {dob}: {str(date_error)}")
-
-                # Normalize sex field (capitalize first letter)
-                if "sex" in normalized_args:
-                    sex_value = normalized_args["sex"]
-                    if isinstance(sex_value, str):
-                        sex_lower = sex_value.lower().strip()
-                        if sex_lower == "decline to answer":
-                            normalized_args["sex"] = "Decline to Answer"
-                        elif sex_lower in ["male", "female", "other"]:
-                            normalized_args["sex"] = sex_lower.capitalize()
-                        logger.info(f"Normalized sex from {sex_value} to {normalized_args['sex']}")
-
-                # Clean phone number (remove spaces, dashes, take last 10 digits)
-                if "phone_number" in normalized_args:
-                    phone = str(normalized_args["phone_number"]).replace(" ", "").replace("-", "").replace(".", "")
-                    phone = phone[-10:] if len(phone) >= 10 else phone
-                    normalized_args["phone_number"] = phone
-                    logger.info(f"Normalized phone_number to {phone}")
-
-                # Check for existing patient by phone number (duplicate detection)
-                phone_number = normalized_args.get("phone_number")
-                if phone_number:
-                    existing = crud.get_patient_by_phone(db, phone_number)
-                    if existing:
-                        logger.warning(f"Patient already exists with phone {phone_number}")
-                        results.append({
-                            "toolCallId": tool_call_id,
-                            "error": f"Patient with phone {phone_number} already exists"
-                        })
-                        continue
-
-                # Validate arguments against existing PatientCreate schema
-                patient_data = schemas.PatientCreate(**normalized_args)
-                logger.info(f"✅ Validation passed for patient: {normalized_args.get('first_name')} {normalized_args.get('last_name')}")
-
-                # Reuse existing CRUD logic
-                new_patient = crud.create_patient(db, patient_data)
-                logger.info(f"✅ Patient saved successfully: {new_patient.patient_id} - {new_patient.first_name} {new_patient.last_name}")
-
-                results.append({
-                    "toolCallId": tool_call_id,
-                    "result": "Patient saved successfully"
-                })
-
-            except ValueError as ve:
-                logger.error(f"Validation error for {tool_call_id}: {str(ve)}")
-                results.append({
-                    "toolCallId": tool_call_id,
-                    "error": f"Patient could not be saved: {str(ve)}"
-                })
-            except Exception as patient_error:
-                logger.error(f"Error for {tool_call_id}: {str(patient_error)}")
-                results.append({
-                    "toolCallId": tool_call_id,
-                    "error": f"Patient could not be saved: {str(patient_error)}"
-                })
-
-        # Return Vapi-compliant response (always HTTP 200)
-        return {"results": results}
-
-    except Exception as e:
-        logger.error(f"Vapi webhook error: {str(e)}")
         return {
-            "results": [{
-                "toolCallId": "unknown",
-                "error": f"Invalid request: {str(e)}"
-            }]
+            "data": crud.get_dashboard_overview(db),
+            "error": None,
+            "status": 200,
         }
+    except Exception as e:
+        logger.error(f"Error loading dashboard overview: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/calls")
+async def list_calls(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """List recent voice-agent calls for the dashboard."""
+    try:
+        calls = crud.get_recent_calls(db, skip=skip, limit=limit)
+        return {
+            "data": {"calls": [serialize_record(call) for call in calls]},
+            "error": None,
+            "status": 200,
+        }
+    except Exception as e:
+        logger.error(f"Error listing calls: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/calls/{call_id}")
+async def get_call(call_id: str, db: Session = Depends(get_db)):
+    """Retrieve one voice-agent call summary."""
+    try:
+        call = crud.get_call(db, call_id)
+        if not call:
+            raise HTTPException(status_code=404, detail="Call not found")
+        return {
+            "data": serialize_record(call),
+            "error": None,
+            "status": 200,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving call {call_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/calls/{call_id}/timeline")
+async def get_call_timeline(call_id: str, db: Session = Depends(get_db)):
+    """Retrieve transcripts, events, tools, tokens, and pipeline metrics for a call."""
+    try:
+        call = crud.get_call(db, call_id)
+        if not call:
+            raise HTTPException(status_code=404, detail="Call not found")
+        timeline = crud.get_call_timeline(db, call_id)
+        return {
+            "data": {
+                "call": serialize_record(call),
+                **{
+                    key: [serialize_record(item) for item in values]
+                    for key, values in timeline.items()
+                },
+            },
+            "error": None,
+            "status": 200,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving call timeline {call_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/metrics/tokens")
+async def list_token_usage(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """List recent LLM token-usage rows for cost/latency dashboarding."""
+    try:
+        rows = (
+            db.query(models.LLMTokenUsage)
+            .order_by(desc(models.LLMTokenUsage.created_at))
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+        return {
+            "data": {"token_usage": [serialize_record(row) for row in rows]},
+            "error": None,
+            "status": 200,
+        }
+    except Exception as e:
+        logger.error(f"Error listing token usage: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 if __name__ == "__main__":
