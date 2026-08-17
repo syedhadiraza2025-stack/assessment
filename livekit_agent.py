@@ -259,5 +259,10 @@ if __name__ == "__main__":
     init_database()
     logger.info("Database initialized for LiveKit worker: %s", safe_database_url())
     agents.cli.run_app(
-        agents.WorkerOptions(entrypoint_fnc=entrypoint, agent_name="patient-intake-agent")
+        agents.WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            agent_name="patient-intake-agent",
+            job_executor_type=agents.JobExecutorType.THREAD,
+            num_idle_processes=0,
+        )
     )
