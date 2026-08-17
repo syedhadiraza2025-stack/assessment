@@ -1,10 +1,10 @@
 databases:
-  - name: voice-agent-db
+  - name: assessment-db
     plan: free
 
 services:
   - type: web
-    name: voice-agent-api
+    name: assessment
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
@@ -15,13 +15,13 @@ services:
         value: 3.11.11
       - key: DATABASE_URL
         fromDatabase:
-          name: voice-agent-db
+          name: assessment-db
           property: connectionString
       - key: LOG_LEVEL
         value: INFO
 
   - type: worker
-    name: voice-agent-livekit-worker
+    name: assessment-livekit-worker
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
@@ -31,7 +31,7 @@ services:
         value: 3.11.11
       - key: DATABASE_URL
         fromDatabase:
-          name: voice-agent-db
+          name: assessment-db
           property: connectionString
       - key: LIVEKIT_URL
         sync: false
