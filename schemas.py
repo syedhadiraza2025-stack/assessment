@@ -68,11 +68,22 @@ def validate_sex_value(value: Optional[str]) -> Optional[str]:
     if value is None:
         return value
     normalized = value.strip()
-    sex_lower = normalized.lower()
-    if sex_lower == "decline to answer":
+    sex_lower = re.sub(r"[^a-z ]+", " ", normalized.lower())
+    sex_lower = re.sub(r"\s+", " ", sex_lower).strip()
+    if sex_lower in {"m", "male", "man", "i am male", "im male", "i m male", "i am a male"}:
+        normalized = "Male"
+    elif sex_lower in {"f", "female", "woman", "i am female", "im female", "i m female", "i am a female"}:
+        normalized = "Female"
+    elif sex_lower in {"other", "non binary", "nonbinary"}:
+        normalized = "Other"
+    elif sex_lower in {
+        "decline to answer",
+        "declined to answer",
+        "prefer not to say",
+        "rather not say",
+        "do not want to answer",
+    }:
         normalized = "Decline to Answer"
-    elif sex_lower in ("male", "female", "other"):
-        normalized = sex_lower.capitalize()
     valid_options = {'Male', 'Female', 'Other', 'Decline to Answer'}
     if normalized not in valid_options:
         raise ValueError(f"Sex must be one of {valid_options}")

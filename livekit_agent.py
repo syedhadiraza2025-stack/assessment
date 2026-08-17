@@ -62,7 +62,8 @@ CONVERSATION FLOW:
 2. Ask fields one at a time naturally
 3. If invalid data: "I need a valid [field]. Could you please provide [field] again?"
 4. Before saving, confirm all required fields back to the caller and get a yes
-5. Call the save_patient tool once confirmed
+5. Call the save_patient tool ONLY after every required field has been collected
+   and the caller explicitly confirms the complete registration summary
 6. On success: "You're all set, [First Name]! Thank you for registering."
 7. On error: relay the error message you got back and ask the caller to correct that field
 
@@ -122,6 +123,8 @@ class IntakeAgent(Agent):
     ) -> str:
         """Save the collected patient demographic information to the database.
 
+        Call this only after all required fields are known and the caller has
+        explicitly confirmed the complete registration summary.
         date_of_birth should be given in MM/DD/YYYY format as spoken by the caller.
         """
         raw_args = {
@@ -143,11 +146,12 @@ class IntakeAgent(Agent):
             "emergency_contact_phone": emergency_contact_phone,
         }
         raw_args = {k: v for k, v in raw_args.items() if v is not None}
-        args = schemas.normalize_patient_args(raw_args)
         started_at = time.perf_counter()
 
         db = SessionLocal()
+        args = dict(raw_args)
         try:
+            args = schemas.normalize_patient_args(raw_args)
             logger.info("Final collected patient payload: %s", args)
             existing = crud.get_patient_by_phone(db, args.get("phone_number", ""))
             if existing:
@@ -179,8 +183,12 @@ class IntakeAgent(Agent):
             )
             return result
         except (ValueError, ValidationError) as ve:
-            logger.error("Validation error saving patient: %s", ve)
-            result = f"That information could not be saved: {ve}"
+            logger.error("Validation error saving patient: %s; raw_args=%s", ve, raw_args)
+            result = (
+                "That information could not be saved yet: "
+                f"{ve}. Please ask the caller for the missing or corrected field, "
+                "then confirm the complete registration summary before saving."
+            )
             log_tool_call_safely(
                 db,
                 tool_name="save_patient",
