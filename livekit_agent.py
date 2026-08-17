@@ -12,9 +12,12 @@ Run modes:
 """
 
 import os
+import asyncio
 import logging
+import math
 import time
-from typing import Optional
+import uuid
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 from pydantic import ValidationError
@@ -91,8 +94,77 @@ def log_tool_call_safely(db, **kwargs) -> None:
         logger.warning("Dashboard tool-call log failed: %s", log_error)
 
 
+def log_pipeline_metric_safely(db, **kwargs) -> None:
+    try:
+        crud.create_pipeline_metric(db, **kwargs)
+    except Exception as log_error:
+        logger.warning("Dashboard pipeline metric log failed: %s", log_error)
+
+
+def dashboard_write(label: str, writer) -> None:
+    db = SessionLocal()
+    try:
+        writer(db)
+    except Exception as error:
+        logger.warning("Dashboard %s write failed: %s", label, error)
+    finally:
+        db.close()
+
+
+def seconds_to_ms(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(float(value) * 1000)
+    except (TypeError, ValueError):
+        return None
+
+
+def metric_payload(metrics: Any) -> dict[str, Any]:
+    if hasattr(metrics, "model_dump"):
+        return clean_json(metrics.model_dump(mode="json"))
+    if isinstance(metrics, dict):
+        return clean_json(metrics)
+    return {"type": type(metrics).__name__, "repr": repr(metrics)}
+
+
+def clean_json(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: clean_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [clean_json(item) for item in value]
+    return value
+
+
+def metric_stage(metrics_type: str) -> str:
+    return {
+        "stt_metrics": "stt",
+        "llm_metrics": "llm",
+        "tts_metrics": "tts",
+        "vad_metrics": "vad",
+        "eou_metrics": "vad",
+        "eot_inference_metrics": "vad",
+        "realtime_model_metrics": "llm",
+        "interruption_metrics": "turn_detection",
+        "avatar_metrics": "output",
+    }.get(metrics_type, metrics_type.replace("_metrics", "") or "unknown")
+
+
+def text_from_chat_item(item: Any) -> str:
+    text = getattr(item, "text_content", None) or getattr(item, "raw_text_content", None)
+    if callable(text):
+        text = text()
+    if isinstance(text, list):
+        text = " ".join(str(part) for part in text if part)
+    return str(text or "").strip()
+
+
 class IntakeAgent(Agent):
-    def __init__(self) -> None:
+    def __init__(self, *, call_id: Optional[str] = None, current_patient_id: Optional[dict[str, Optional[str]]] = None) -> None:
+        self.call_id = call_id
+        self.current_patient_id = current_patient_id if current_patient_id is not None else {"value": None}
         super().__init__(
             instructions=INSTRUCTIONS,
             stt=deepgram.STT(model="nova-2", language="en"),
@@ -157,29 +229,62 @@ class IntakeAgent(Agent):
             if existing:
                 logger.warning("Duplicate phone on save_patient: %s", args.get("phone_number"))
                 result = f"A patient with phone {args['phone_number']} already exists."
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
                 log_tool_call_safely(
                     db,
                     tool_name="save_patient",
                     arguments=args,
                     result_text=result,
                     success=False,
+                    call_id=self.call_id,
                     patient_id=existing.patient_id,
-                    latency_ms=int((time.perf_counter() - started_at) * 1000),
+                    latency_ms=latency_ms,
+                )
+                log_pipeline_metric_safely(
+                    db,
+                    stage="database",
+                    provider="postgres",
+                    latency_ms=latency_ms,
+                    status="duplicate",
+                    payload={"tool": "save_patient"},
+                    call_id=self.call_id,
+                    patient_id=existing.patient_id,
                 )
                 return result
 
             patient_data = schemas.PatientCreate(**args)
             new_patient = crud.create_patient(db, patient_data)
+            self.current_patient_id["value"] = new_patient.patient_id
             logger.info("Patient saved: %s %s (%s)", new_patient.first_name, new_patient.last_name, new_patient.patient_id)
             result = f"Patient {new_patient.first_name} {new_patient.last_name} registered successfully."
+            if self.call_id:
+                crud.update_call_session(
+                    db,
+                    self.call_id,
+                    patient_id=new_patient.patient_id,
+                    status="completed",
+                    final_payload=args,
+                    summary=result,
+                )
             log_tool_call_safely(
                 db,
                 tool_name="save_patient",
                 arguments=args,
                 result_text=result,
                 success=True,
+                call_id=self.call_id,
                 patient_id=new_patient.patient_id,
                 latency_ms=int((time.perf_counter() - started_at) * 1000),
+            )
+            log_pipeline_metric_safely(
+                db,
+                stage="database",
+                provider="postgres",
+                latency_ms=int((time.perf_counter() - started_at) * 1000),
+                status="ok",
+                payload={"tool": "save_patient"},
+                call_id=self.call_id,
+                patient_id=new_patient.patient_id,
             )
             return result
         except (ValueError, ValidationError) as ve:
@@ -189,25 +294,49 @@ class IntakeAgent(Agent):
                 f"{ve}. Please ask the caller for the missing or corrected field, "
                 "then confirm the complete registration summary before saving."
             )
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
             log_tool_call_safely(
                 db,
                 tool_name="save_patient",
                 arguments=args,
                 result_text=result,
                 success=False,
-                latency_ms=int((time.perf_counter() - started_at) * 1000),
+                call_id=self.call_id,
+                latency_ms=latency_ms,
+            )
+            log_pipeline_metric_safely(
+                db,
+                stage="database",
+                provider="postgres",
+                latency_ms=latency_ms,
+                status="validation_error",
+                payload={"tool": "save_patient", "error": str(ve)},
+                call_id=self.call_id,
+                patient_id=self.current_patient_id["value"],
             )
             return result
         except Exception as e:
             logger.exception("Database error saving patient")
             result = "Sorry, I could not save that registration because the database write failed. Please try again."
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
             log_tool_call_safely(
                 db,
                 tool_name="save_patient",
                 arguments=args,
                 result_text=str(e),
                 success=False,
-                latency_ms=int((time.perf_counter() - started_at) * 1000),
+                call_id=self.call_id,
+                latency_ms=latency_ms,
+            )
+            log_pipeline_metric_safely(
+                db,
+                stage="database",
+                provider="postgres",
+                latency_ms=latency_ms,
+                status="error",
+                payload={"tool": "save_patient", "error": str(e)},
+                call_id=self.call_id,
+                patient_id=self.current_patient_id["value"],
             )
             return result
         finally:
@@ -228,6 +357,7 @@ class IntakeAgent(Agent):
                 arguments={"phone_number": digits},
                 result_text=result,
                 success=True,
+                call_id=self.call_id,
                 patient_id=existing.patient_id if existing else None,
                 latency_ms=int((time.perf_counter() - started_at) * 1000),
             )
@@ -250,15 +380,74 @@ class IntakeAgent(Agent):
 
 async def entrypoint(ctx: agents.JobContext) -> None:
     init_database()
+    call_id = getattr(getattr(ctx, "job", None), "id", None) or str(uuid.uuid4())
+    room_name = getattr(ctx.room, "name", "unknown")
+    current_patient_id: dict[str, Optional[str]] = {"value": None}
     logger.info(
         "LiveKit job received: room=%s job=%s",
-        getattr(ctx.room, "name", "unknown"),
-        getattr(getattr(ctx, "job", None), "id", "unknown"),
+        room_name,
+        call_id,
     )
     logger.info("Database initialized for LiveKit worker: %s", safe_database_url())
+
+    def _upsert_call_start(db) -> None:
+        existing = crud.get_call(db, call_id)
+        if existing:
+            crud.update_call_session(
+                db,
+                call_id,
+                livekit_room_name=room_name,
+                status="started",
+                error_message="",
+            )
+        else:
+            crud.create_call_session(
+                db,
+                call_id=call_id,
+                livekit_room_name=room_name,
+                status="started",
+            )
+
+    dashboard_write("call start", _upsert_call_start)
     await ctx.connect()
 
+    try:
+        participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=2)
+        attributes = getattr(participant, "attributes", {}) or {}
+        caller_phone = (
+            attributes.get("sip.phoneNumber")
+            or attributes.get("sip.trunkPhoneNumber")
+            or attributes.get("lk.phoneNumber")
+        )
+        dashboard_write(
+            "caller identity",
+            lambda db: crud.update_call_session(
+                db,
+                call_id,
+                livekit_participant_identity=getattr(participant, "identity", None),
+                caller_phone=caller_phone,
+            ),
+        )
+    except asyncio.TimeoutError:
+        logger.info("No remote caller participant available yet for dashboard metadata.")
+
     session = AgentSession(user_away_timeout=None, transcription_timeout=5.0)
+    close_future = asyncio.get_running_loop().create_future()
+
+    def _persist_state_event(event_type: str, event) -> None:
+        dashboard_write(
+            event_type,
+            lambda db: crud.create_agent_event(
+                db,
+                call_id=call_id,
+                patient_id=current_patient_id["value"],
+                event_type=event_type,
+                payload={
+                    "old_state": getattr(event, "old_state", None),
+                    "new_state": getattr(event, "new_state", None),
+                },
+            ),
+        )
 
     @session.on("user_input_transcribed")
     def _on_user_input_transcribed(event) -> None:
@@ -267,12 +456,35 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             event.is_final,
             event.transcript,
         )
+        if event.transcript:
+            dashboard_write(
+                "user transcript",
+                lambda db: crud.create_transcript_message(
+                    db,
+                    call_id=call_id,
+                    patient_id=current_patient_id["value"],
+                    speaker="patient",
+                    text=event.transcript,
+                    is_final=event.is_final,
+                ),
+            )
 
     @session.on("user_transcription_timeout")
     def _on_user_transcription_timeout(event) -> None:
         logger.warning(
             "User speech detected but no transcript: speech_duration=%.2f",
             event.speech_duration,
+        )
+        dashboard_write(
+            "transcription timeout",
+            lambda db: crud.create_agent_event(
+                db,
+                call_id=call_id,
+                patient_id=current_patient_id["value"],
+                event_type="user_transcription_timeout",
+                provider="deepgram",
+                payload={"speech_duration": event.speech_duration},
+            ),
         )
         session.say(
             "I heard something, but I couldn't make out the words. Could you please repeat that?",
@@ -282,17 +494,126 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     @session.on("agent_state_changed")
     def _on_agent_state_changed(event) -> None:
         logger.info("Agent state changed: %s -> %s", event.old_state, event.new_state)
+        _persist_state_event("agent_state_changed", event)
 
     @session.on("user_state_changed")
     def _on_user_state_changed(event) -> None:
         logger.info("User state changed: %s -> %s", event.old_state, event.new_state)
+        _persist_state_event("user_state_changed", event)
+
+    @session.on("conversation_item_added")
+    def _on_conversation_item_added(event) -> None:
+        item = event.item
+        role = getattr(item, "role", "")
+        text = text_from_chat_item(item)
+        if role == "assistant" and text:
+            dashboard_write(
+                "assistant transcript",
+                lambda db: crud.create_transcript_message(
+                    db,
+                    call_id=call_id,
+                    patient_id=current_patient_id["value"],
+                    speaker="agent",
+                    text=text,
+                    is_final=True,
+                ),
+            )
+
+    @session.on("metrics_collected")
+    def _on_metrics_collected(event) -> None:
+        payload = metric_payload(event.metrics)
+        metrics_type = payload.get("type", "unknown_metrics")
+        metadata = payload.get("metadata") or {}
+        provider = metadata.get("model_provider") or payload.get("label")
+        model = metadata.get("model_name")
+        latency_seconds = next(
+            (
+                payload.get(key)
+                for key in (
+                    "duration",
+                    "ttft",
+                    "ttfb",
+                    "end_of_utterance_delay",
+                    "transcription_delay",
+                    "inference_duration_total",
+                    "total_duration",
+                )
+                if payload.get(key) not in (None, -1)
+            ),
+            None,
+        )
+        duration_seconds = payload.get("audio_duration") or payload.get("duration")
+
+        def _write_metrics(db) -> None:
+            crud.create_pipeline_metric(
+                db,
+                call_id=call_id,
+                patient_id=current_patient_id["value"],
+                stage=metric_stage(metrics_type),
+                provider=provider,
+                model=model,
+                latency_ms=seconds_to_ms(latency_seconds),
+                duration_ms=seconds_to_ms(duration_seconds),
+                status="ok",
+                payload=payload,
+            )
+            if metrics_type in {"llm_metrics", "realtime_model_metrics"}:
+                crud.create_llm_token_usage(
+                    db,
+                    call_id=call_id,
+                    patient_id=current_patient_id["value"],
+                    provider=provider or "llm",
+                    model=model or GROQ_MODEL,
+                    prompt_tokens=int(payload.get("prompt_tokens") or payload.get("input_tokens") or 0),
+                    completion_tokens=int(
+                        payload.get("completion_tokens") or payload.get("output_tokens") or 0
+                    ),
+                    total_tokens=int(payload.get("total_tokens") or 0),
+                    latency_ms=seconds_to_ms(payload.get("duration")),
+                )
+
+        dashboard_write("pipeline metric", _write_metrics)
 
     @session.on("error")
     def _on_session_error(event) -> None:
         logger.error("Agent session error from %r: %r", event.source, event.error)
+        dashboard_write(
+            "session error",
+            lambda db: crud.create_agent_event(
+                db,
+                call_id=call_id,
+                patient_id=current_patient_id["value"],
+                event_type="session_error",
+                provider=repr(event.source),
+                payload={"error": repr(event.error)},
+            ),
+        )
+
+    @session.on("close")
+    def _on_session_close(event) -> None:
+        logger.info("Agent session closed: reason=%s error=%r", event.reason, event.error)
+
+        def _finish_call(db) -> None:
+            call = crud.get_call(db, call_id)
+            if call and call.status == "completed":
+                status = "completed"
+            elif getattr(event, "error", None):
+                status = "failed"
+            else:
+                status = "dropped"
+            crud.finish_call_session(
+                db,
+                call_id,
+                status=status,
+                error_message=repr(event.error) if getattr(event, "error", None) else None,
+            )
+
+        dashboard_write("call finish", _finish_call)
+        if not close_future.done():
+            close_future.set_result(None)
 
     await session.start(
-        agent=IntakeAgent(),
+        agent=IntakeAgent(call_id=call_id, current_patient_id=current_patient_id),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
@@ -304,7 +625,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         "Can I start by getting your first name?",
         allow_interruptions=True,
     )
-    await greeting.wait_for_playout()
+    await close_future
 
 
 if __name__ == "__main__":

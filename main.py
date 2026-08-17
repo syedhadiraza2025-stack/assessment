@@ -1,8 +1,10 @@
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, List, Optional
 import logging
 import os
@@ -20,6 +22,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+BASE_DIR = Path(__file__).resolve().parent
+DASHBOARD_PATH = BASE_DIR / "static" / "dashboard.html"
 
 
 def _json_value(value: Any) -> Any:
@@ -58,6 +63,16 @@ async def startup() -> None:
 async def health():
     """Health check endpoint"""
     return {"status": "ok", "service": "patient-registration-api"}
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse(url="/dashboard")
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard():
+    return FileResponse(DASHBOARD_PATH)
 
 @app.get("/patients")
 async def list_patients(
@@ -332,6 +347,56 @@ async def list_token_usage(
         }
     except Exception as e:
         logger.error(f"Error listing token usage: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/metrics/pipeline")
+async def list_pipeline_metrics(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """List recent VAD/STT/LLM/TTS pipeline latency metrics."""
+    try:
+        rows = (
+            db.query(models.PipelineMetric)
+            .order_by(desc(models.PipelineMetric.created_at))
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+        return {
+            "data": {"pipeline_metrics": [serialize_record(row) for row in rows]},
+            "error": None,
+            "status": 200,
+        }
+    except Exception as e:
+        logger.error(f"Error listing pipeline metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/tool-calls")
+async def list_tool_calls(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """List recent tool/function calls made by the voice agent."""
+    try:
+        rows = (
+            db.query(models.ToolCallLog)
+            .order_by(desc(models.ToolCallLog.created_at))
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+        return {
+            "data": {"tool_calls": [serialize_record(row) for row in rows]},
+            "error": None,
+            "status": 200,
+        }
+    except Exception as e:
+        logger.error(f"Error listing tool calls: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

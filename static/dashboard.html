@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice Agent Operations</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #172026;
+      --muted: #63717d;
+      --line: #d8dde3;
+      --soft: #eef2f5;
+      --teal: #087f7a;
+      --blue: #2357c6;
+      --amber: #a65f00;
+      --red: #b42318;
+      --green: #167447;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 22px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(8px);
+    }
+
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 20px; font-weight: 720; letter-spacing: 0; }
+    h2 { font-size: 15px; font-weight: 700; }
+    h3 { font-size: 13px; font-weight: 700; }
+    button, input {
+      font: inherit;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--green);
+      display: inline-block;
+      box-shadow: 0 0 0 3px rgba(22, 116, 71, 0.12);
+    }
+
+    .button {
+      height: 34px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 0 12px;
+      cursor: pointer;
+    }
+
+    .button:hover { border-color: #9aa6b2; }
+
+    main {
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 18px 22px 28px;
+    }
+
+    .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .summary-grid {
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      margin-bottom: 16px;
+    }
+
+    .kpi {
+      min-height: 78px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+    }
+
+    .kpi span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .kpi strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(520px, 1.25fr) minmax(420px, 0.95fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .section-body {
+      padding: 12px 14px;
+    }
+
+    .search {
+      width: 260px;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 10px;
+      background: #fff;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      text-align: left;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      border-bottom: 1px solid var(--line);
+      padding: 9px 8px;
+      white-space: nowrap;
+    }
+
+    td {
+      border-bottom: 1px solid #edf0f3;
+      padding: 10px 8px;
+      vertical-align: top;
+    }
+
+    tbody tr { cursor: default; }
+    tbody tr:hover { background: #fafafa; }
+
+    .mono {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }
+
+    .muted { color: var(--muted); }
+    .nowrap { white-space: nowrap; }
+    .clip {
+      max-width: 280px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      border-radius: 999px;
+      padding: 0 8px;
+      font-size: 12px;
+      font-weight: 650;
+      background: var(--soft);
+      color: #33424f;
+    }
+
+    .badge.completed, .badge.ok, .badge.true { background: #e6f4ec; color: var(--green); }
+    .badge.failed, .badge.dropped, .badge.false { background: #fdebea; color: var(--red); }
+    .badge.started { background: #eaf0ff; color: var(--blue); }
+    .badge.warning { background: #fff5df; color: var(--amber); }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(90px, 1fr));
+      gap: 8px;
+    }
+
+    .stage {
+      min-height: 72px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fcfcfd;
+    }
+
+    .stage-name {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 7px;
+    }
+
+    .stage-value {
+      font-size: 18px;
+      font-weight: 720;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 8px;
+      max-height: 410px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .turn {
+      border-left: 3px solid var(--line);
+      padding: 7px 9px;
+      background: #fbfcfd;
+      border-radius: 0 6px 6px 0;
+    }
+
+    .turn.patient { border-left-color: var(--blue); }
+    .turn.agent { border-left-color: var(--teal); }
+    .turn.tool { border-left-color: var(--amber); }
+    .turn.metric { border-left-color: #6f42c1; }
+
+    .turn-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 3px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .empty {
+      padding: 18px;
+      color: var(--muted);
+      text-align: center;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+    }
+
+    .json {
+      max-height: 180px;
+      overflow: auto;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f9fafb;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    @media (max-width: 1100px) {
+      .summary-grid { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+      .layout, .two-col { grid-template-columns: 1fr; }
+      .pipeline { grid-template-columns: repeat(3, minmax(90px, 1fr)); }
+    }
+
+    @media (max-width: 680px) {
+      header { align-items: flex-start; flex-direction: column; }
+      main { padding: 12px; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .section-head { align-items: flex-start; flex-direction: column; }
+      .search { width: 100%; }
+      table { min-width: 680px; }
+      .table-wrap { overflow-x: auto; }
+      .pipeline { grid-template-columns: repeat(2, minmax(90px, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Voice Agent Operations</h1>
+      <p class="muted">Patient intake, call history, pipeline latency, token usage, and tool execution</p>
+    </div>
+    <div class="top-actions">
+      <span class="status-dot"></span>
+      <span id="healthText">Checking API</span>
+      <span id="updatedAt"></span>
+      <button class="button" id="refreshBtn" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="grid summary-grid" id="summary"></div>
+
+    <div class="layout">
+      <div class="grid">
+        <section>
+          <div class="section-head">
+            <h2>Patients</h2>
+            <input class="search" id="patientSearch" placeholder="Search patients" autocomplete="off">
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>DOB</th>
+                  <th>Sex</th>
+                  <th>Phone</th>
+                  <th>Address</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody id="patientsBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section>
+          <div class="section-head">
+            <h2>Call History</h2>
+            <span class="muted" id="selectedCallLabel">No call selected</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Started</th>
+                  <th>Duration</th>
+                  <th>Room</th>
+                  <th>Patient</th>
+                </tr>
+              </thead>
+              <tbody id="callsBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <div class="grid">
+        <section>
+          <div class="section-head">
+            <h2>Pipeline</h2>
+            <span class="muted">Recent stage latency</span>
+          </div>
+          <div class="section-body">
+            <div class="pipeline" id="pipelineStages"></div>
+          </div>
+        </section>
+
+        <section>
+          <div class="section-head">
+            <h2>Selected Call Timeline</h2>
+            <span class="muted" id="timelineCount">0 events</span>
+          </div>
+          <div class="section-body">
+            <div class="timeline" id="timeline"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <section>
+        <div class="section-head">
+          <h2>Tool Calls</h2>
+          <span class="muted">save_patient and duplicate checks</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Result</th>
+                <th>Latency</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody id="toolsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>LLM Tokens</h2>
+          <span class="muted">Provider, model, usage, latency</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Prompt</th>
+                <th>Completion</th>
+                <th>Total</th>
+                <th>Latency</th>
+              </tr>
+            </thead>
+            <tbody id="tokensBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const state = {
+      overview: {},
+      patients: [],
+      calls: [],
+      toolCalls: [],
+      tokenUsage: [],
+      pipelineMetrics: [],
+      selectedCallId: null,
+      selectedTimeline: null
+    };
+
+    const stageOrder = ["telephony", "vad", "stt", "llm", "tts", "database"];
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function fmtDate(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return escapeHtml(value);
+      return date.toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    }
+
+    function fmtDay(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return escapeHtml(value);
+      return date.toLocaleDateString();
+    }
+
+    function fmtMs(value) {
+      if (value === null || value === undefined || value === "") return "-";
+      return `${Math.round(Number(value))} ms`;
+    }
+
+    function fmtDuration(seconds) {
+      if (seconds === null || seconds === undefined) return "-";
+      const value = Number(seconds);
+      if (!Number.isFinite(value)) return "-";
+      if (value < 60) return `${value}s`;
+      return `${Math.floor(value / 60)}m ${value % 60}s`;
+    }
+
+    function badge(value) {
+      const text = String(value ?? "unknown");
+      return `<span class="badge ${escapeHtml(text.toLowerCase())}">${escapeHtml(text)}</span>`;
+    }
+
+    async function getJson(path) {
+      const res = await fetch(path, { cache: "no-store" });
+      if (!res.ok) throw new Error(`${path} ${res.status}`);
+      return res.json();
+    }
+
+    async function loadDashboard({ keepSelection = false } = {}) {
+      document.getElementById("healthText").textContent = "Loading";
+      const [health, overview, patients, calls, tools, tokens, pipeline] = await Promise.all([
+        getJson("/health"),
+        getJson("/dashboard/overview"),
+        getJson("/patients?limit=200"),
+        getJson("/calls?limit=100"),
+        getJson("/tool-calls?limit=100"),
+        getJson("/metrics/tokens?limit=100"),
+        getJson("/metrics/pipeline?limit=200")
+      ]);
+
+      state.overview = overview.data || {};
+      state.patients = patients.data?.patients || [];
+      state.calls = calls.data?.calls || [];
+      state.toolCalls = tools.data?.tool_calls || [];
+      state.tokenUsage = tokens.data?.token_usage || [];
+      state.pipelineMetrics = pipeline.data?.pipeline_metrics || [];
+
+      if (!keepSelection || !state.calls.some((call) => call.call_id === state.selectedCallId)) {
+        state.selectedCallId = state.calls[0]?.call_id || null;
+      }
+
+      await loadSelectedTimeline();
+      renderAll();
+      document.getElementById("healthText").textContent = health.status === "ok" ? "API live" : "API unknown";
+      document.getElementById("updatedAt").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    }
+
+    async function loadSelectedTimeline() {
+      if (!state.selectedCallId) {
+        state.selectedTimeline = null;
+        return;
+      }
+      try {
+        const data = await getJson(`/calls/${encodeURIComponent(state.selectedCallId)}/timeline`);
+        state.selectedTimeline = data.data;
+      } catch (error) {
+        state.selectedTimeline = null;
+      }
+    }
+
+    function renderSummary() {
+      const overview = state.overview || {};
+      const items = [
+        ["Patients", overview.active_patients ?? 0],
+        ["Calls", overview.total_calls ?? 0],
+        ["Completed", overview.completed_calls ?? 0],
+        ["Failed or Dropped", overview.failed_calls ?? 0],
+        ["Tool Success", `${overview.tool_success_rate ?? 0}%`],
+        ["LLM Tokens", overview.llm_total_tokens ?? 0]
+      ];
+      document.getElementById("summary").innerHTML = items.map(([label, value]) => `
+        <div class="kpi"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>
+      `).join("");
+    }
+
+    function renderPatients() {
+      const query = document.getElementById("patientSearch").value.trim().toLowerCase();
+      const rows = state.patients.filter((patient) => {
+        const haystack = [
+          patient.first_name,
+          patient.last_name,
+          patient.phone_number,
+          patient.date_of_birth,
+          patient.city,
+          patient.state
+        ].join(" ").toLowerCase();
+        return haystack.includes(query);
+      });
+      document.getElementById("patientsBody").innerHTML = rows.length ? rows.map((patient) => `
+        <tr>
+          <td><strong>${escapeHtml(patient.first_name)} ${escapeHtml(patient.last_name)}</strong><div class="mono muted">${escapeHtml(patient.patient_id)}</div></td>
+          <td class="nowrap">${fmtDay(patient.date_of_birth)}</td>
+          <td>${escapeHtml(patient.sex)}</td>
+          <td class="mono">${escapeHtml(patient.phone_number)}</td>
+          <td class="clip">${escapeHtml([patient.address_line_1, patient.city, patient.state, patient.zip_code].filter(Boolean).join(", "))}</td>
+          <td class="nowrap">${fmtDate(patient.created_at)}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="6"><div class="empty">No patient records yet</div></td></tr>`;
+    }
+
+    function renderCalls() {
+      document.getElementById("callsBody").innerHTML = state.calls.length ? state.calls.map((call) => `
+        <tr data-call-id="${escapeHtml(call.call_id)}" style="${call.call_id === state.selectedCallId ? "background:#f4f8ff" : ""}">
+          <td>${badge(call.status)}</td>
+          <td class="nowrap">${fmtDate(call.started_at)}</td>
+          <td>${fmtDuration(call.duration_seconds)}</td>
+          <td class="clip mono">${escapeHtml(call.livekit_room_name || "-")}</td>
+          <td class="mono">${escapeHtml(call.patient_id || "-")}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="5"><div class="empty">No calls captured yet</div></td></tr>`;
+
+      document.querySelectorAll("[data-call-id]").forEach((row) => {
+        row.addEventListener("click", async () => {
+          state.selectedCallId = row.getAttribute("data-call-id");
+          await loadSelectedTimeline();
+          renderCalls();
+          renderTimeline();
+        });
+      });
+
+      const call = state.calls.find((row) => row.call_id === state.selectedCallId);
+      document.getElementById("selectedCallLabel").textContent = call ? call.call_id : "No call selected";
+    }
+
+    function stageStats(stage) {
+      const overviewRows = state.overview.pipeline_latency_by_stage || [];
+      const overview = overviewRows.find((row) => row.stage === stage);
+      if (overview) return overview;
+      const rows = state.pipelineMetrics.filter((metric) => metric.stage === stage);
+      if (!rows.length) return { stage, count: 0, avg_latency_ms: 0, max_latency_ms: 0 };
+      const values = rows.map((row) => Number(row.latency_ms || 0)).filter(Number.isFinite);
+      const total = values.reduce((sum, value) => sum + value, 0);
+      return {
+        stage,
+        count: rows.length,
+        avg_latency_ms: values.length ? total / values.length : 0,
+        max_latency_ms: values.length ? Math.max(...values) : 0
+      };
+    }
+
+    function renderPipeline() {
+      document.getElementById("pipelineStages").innerHTML = stageOrder.map((stage) => {
+        const stats = stageStats(stage);
+        const label = stats.count ? fmtMs(stats.avg_latency_ms) : "-";
+        return `
+          <div class="stage">
+            <div class="stage-name">${escapeHtml(stage)}</div>
+            <div class="stage-value">${label}</div>
+            <div class="muted">${stats.count || 0} samples</div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function timelineItems() {
+      const data = state.selectedTimeline;
+      if (!data) return [];
+      const items = [];
+      for (const t of data.transcripts || []) {
+        items.push({
+          at: t.created_at,
+          type: t.speaker === "agent" ? "agent" : "patient",
+          title: t.speaker === "agent" ? "Agent" : "Patient",
+          body: t.text
+        });
+      }
+      for (const tool of data.tool_calls || []) {
+        items.push({
+          at: tool.created_at,
+          type: "tool",
+          title: `${tool.tool_name} ${tool.success ? "succeeded" : "failed"}`,
+          body: tool.result_text || JSON.stringify(tool.arguments || {})
+        });
+      }
+      for (const metric of data.pipeline_metrics || []) {
+        items.push({
+          at: metric.created_at,
+          type: "metric",
+          title: `${metric.stage} ${metric.provider || ""}`,
+          body: `${fmtMs(metric.latency_ms)} latency${metric.model ? `, ${metric.model}` : ""}`
+        });
+      }
+      return items.sort((a, b) => new Date(a.at) - new Date(b.at));
+    }
+
+    function renderTimeline() {
+      const items = timelineItems();
+      document.getElementById("timelineCount").textContent = `${items.length} events`;
+      document.getElementById("timeline").innerHTML = items.length ? items.map((item) => `
+        <div class="turn ${escapeHtml(item.type)}">
+          <div class="turn-head"><strong>${escapeHtml(item.title)}</strong><span>${fmtDate(item.at)}</span></div>
+          <div>${escapeHtml(item.body)}</div>
+        </div>
+      `).join("") : `<div class="empty">Select a captured call to inspect the transcript, tools, tokens, and pipeline metrics</div>`;
+    }
+
+    function renderTools() {
+      document.getElementById("toolsBody").innerHTML = state.toolCalls.length ? state.toolCalls.map((tool) => `
+        <tr>
+          <td>${escapeHtml(tool.tool_name)}<div class="mono muted">${escapeHtml(tool.call_id || "")}</div></td>
+          <td>${badge(tool.success)}<div class="clip">${escapeHtml(tool.result_text || "")}</div></td>
+          <td>${fmtMs(tool.latency_ms)}</td>
+          <td class="nowrap">${fmtDate(tool.created_at)}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="4"><div class="empty">No tool calls yet</div></td></tr>`;
+    }
+
+    function renderTokens() {
+      document.getElementById("tokensBody").innerHTML = state.tokenUsage.length ? state.tokenUsage.map((row) => `
+        <tr>
+          <td><strong>${escapeHtml(row.provider)}</strong><div class="clip mono">${escapeHtml(row.model)}</div></td>
+          <td>${escapeHtml(row.prompt_tokens)}</td>
+          <td>${escapeHtml(row.completion_tokens)}</td>
+          <td><strong>${escapeHtml(row.total_tokens)}</strong></td>
+          <td>${fmtMs(row.latency_ms)}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="5"><div class="empty">No LLM token records yet</div></td></tr>`;
+    }
+
+    function renderAll() {
+      renderSummary();
+      renderPatients();
+      renderCalls();
+      renderPipeline();
+      renderTimeline();
+      renderTools();
+      renderTokens();
+    }
+
+    document.getElementById("refreshBtn").addEventListener("click", () => loadDashboard({ keepSelection: true }).catch(showError));
+    document.getElementById("patientSearch").addEventListener("input", renderPatients);
+
+    function showError(error) {
+      document.getElementById("healthText").textContent = "API error";
+      document.getElementById("timeline").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+    }
+
+    loadDashboard().catch(showError);
+    setInterval(() => loadDashboard({ keepSelection: true }).catch(showError), 10000);
+  </script>
+</body>
+</html>

@@ -3,7 +3,7 @@ from sqlalchemy import and_, desc, func
 import models
 from models import Patient
 from schemas import PatientCreate, PatientUpdate
-from datetime import date
+from datetime import date, datetime
 from typing import Any, List, Optional
 
 def create_patient(db: Session, patient: PatientCreate) -> Patient:
@@ -119,6 +119,63 @@ def create_call_session(
         status=status,
         language=language,
     )
+    try:
+        db.add(call)
+        db.commit()
+        db.refresh(call)
+    except Exception:
+        db.rollback()
+        raise
+    return call
+
+
+def update_call_session(
+    db: Session,
+    call_id: str,
+    **updates: Any,
+) -> Optional[models.CallSession]:
+    """Update dashboard-visible call metadata without failing if the call is gone."""
+    call = get_call(db, call_id)
+    if not call:
+        return None
+
+    for key, value in updates.items():
+        if value is not None and hasattr(call, key):
+            setattr(call, key, value)
+    call.updated_at = datetime.utcnow()
+
+    try:
+        db.add(call)
+        db.commit()
+        db.refresh(call)
+    except Exception:
+        db.rollback()
+        raise
+    return call
+
+
+def finish_call_session(
+    db: Session,
+    call_id: str,
+    *,
+    status: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> Optional[models.CallSession]:
+    """Mark a call ended and compute its duration for the dashboard."""
+    call = get_call(db, call_id)
+    if not call:
+        return None
+
+    ended_at = datetime.utcnow()
+    call.ended_at = ended_at
+    if status:
+        call.status = status
+    if error_message:
+        call.error_message = error_message
+    if call.started_at:
+        call.duration_seconds = max(0, int((ended_at - call.started_at).total_seconds()))
+    call.updated_at = ended_at
+
     try:
         db.add(call)
         db.commit()
@@ -331,13 +388,39 @@ def get_call_timeline(db: Session, call_id: str) -> dict[str, list[Any]]:
 
 def get_dashboard_overview(db: Session) -> dict[str, Any]:
     total_tokens = db.query(func.coalesce(func.sum(models.LLMTokenUsage.total_tokens), 0)).scalar()
+    pipeline_rows = (
+        db.query(
+            models.PipelineMetric.stage,
+            func.count(models.PipelineMetric.metric_id),
+            func.avg(models.PipelineMetric.latency_ms),
+            func.max(models.PipelineMetric.latency_ms),
+        )
+        .group_by(models.PipelineMetric.stage)
+        .all()
+    )
+    total_tool_calls = db.query(models.ToolCallLog).count()
+    successful_tool_calls = (
+        db.query(models.ToolCallLog)
+        .filter(models.ToolCallLog.success.is_(True))
+        .count()
+    )
     return {
         "active_patients": db.query(Patient).filter(Patient.deleted_at.is_(None)).count(),
         "deleted_patients": db.query(Patient).filter(Patient.deleted_at.is_not(None)).count(),
         "total_calls": db.query(models.CallSession).count(),
         "completed_calls": db.query(models.CallSession).filter(models.CallSession.status == "completed").count(),
         "failed_calls": db.query(models.CallSession).filter(models.CallSession.status.in_(["failed", "dropped"])).count(),
-        "tool_calls": db.query(models.ToolCallLog).count(),
-        "successful_tool_calls": db.query(models.ToolCallLog).filter(models.ToolCallLog.success.is_(True)).count(),
+        "tool_calls": total_tool_calls,
+        "successful_tool_calls": successful_tool_calls,
+        "tool_success_rate": round(successful_tool_calls / total_tool_calls * 100, 1) if total_tool_calls else 0,
         "llm_total_tokens": int(total_tokens or 0),
+        "pipeline_latency_by_stage": [
+            {
+                "stage": stage,
+                "count": int(count or 0),
+                "avg_latency_ms": round(float(avg_latency or 0), 1),
+                "max_latency_ms": int(max_latency or 0),
+            }
+            for stage, count, avg_latency, max_latency in pipeline_rows
+        ],
     }
