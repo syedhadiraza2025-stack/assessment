@@ -250,7 +250,39 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     logger.info("Database initialized for LiveKit worker: %s", safe_database_url())
     await ctx.connect()
 
-    session = AgentSession(user_away_timeout=None)
+    session = AgentSession(user_away_timeout=None, transcription_timeout=5.0)
+
+    @session.on("user_input_transcribed")
+    def _on_user_input_transcribed(event) -> None:
+        logger.info(
+            "User transcript: final=%s text=%r",
+            event.is_final,
+            event.transcript,
+        )
+
+    @session.on("user_transcription_timeout")
+    def _on_user_transcription_timeout(event) -> None:
+        logger.warning(
+            "User speech detected but no transcript: speech_duration=%.2f",
+            event.speech_duration,
+        )
+        session.say(
+            "I heard something, but I couldn't make out the words. Could you please repeat that?",
+            allow_interruptions=True,
+        )
+
+    @session.on("agent_state_changed")
+    def _on_agent_state_changed(event) -> None:
+        logger.info("Agent state changed: %s -> %s", event.old_state, event.new_state)
+
+    @session.on("user_state_changed")
+    def _on_user_state_changed(event) -> None:
+        logger.info("User state changed: %s -> %s", event.old_state, event.new_state)
+
+    @session.on("error")
+    def _on_session_error(event) -> None:
+        logger.error("Agent session error from %r: %r", event.source, event.error)
+
     await session.start(
         agent=IntakeAgent(),
         room=ctx.room,
