@@ -242,10 +242,15 @@ class IntakeAgent(Agent):
 
 async def entrypoint(ctx: agents.JobContext) -> None:
     init_database()
+    logger.info(
+        "LiveKit job received: room=%s job=%s",
+        getattr(ctx.room, "name", "unknown"),
+        getattr(getattr(ctx, "job", None), "id", "unknown"),
+    )
     logger.info("Database initialized for LiveKit worker: %s", safe_database_url())
     await ctx.connect()
 
-    session = AgentSession()
+    session = AgentSession(user_away_timeout=None)
     await session.start(
         agent=IntakeAgent(),
         room=ctx.room,
@@ -253,6 +258,13 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
+    logger.info("Agent session started: room=%s", getattr(ctx.room, "name", "unknown"))
+    greeting = session.say(
+        "Hello! Welcome to our clinic. I'm here to help you register as a new patient. "
+        "Can I start by getting your first name?",
+        allow_interruptions=True,
+    )
+    await greeting.wait_for_playout()
 
 
 if __name__ == "__main__":
