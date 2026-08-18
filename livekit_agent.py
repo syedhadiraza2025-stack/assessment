@@ -78,15 +78,18 @@ OPTIONAL FIELDS (offer after required):
 
 CONVERSATION FLOW:
 1. Start: "Hello! Welcome to our clinic. I'm here to help you register as a new patient. Can I start by getting your first name?"
-2. For first and last name, ask the caller to say the name and spell it letter by letter.
-   Do not guess uncommon names from pronunciation alone. Confirm the spelling before moving on.
-3. Ask all other fields one at a time naturally
-4. If invalid data: "I need a valid [field]. Could you please provide [field] again?"
-5. Before saving, confirm all required fields back to the caller and get a yes
-6. Call the save_patient tool ONLY after every required field has been collected
+2. Ask for first name, then last name. If the caller gives a full name in one answer,
+   use the first word as first_name and the remaining word(s) as last_name.
+3. Do not get stuck on names. Never ask for spelling unless the caller volunteers a correction.
+   If a name is understandable and contains letters, accept it and move to the next field.
+4. Ask all other fields one at a time naturally.
+5. If invalid data: "I need a valid [field]. Could you please provide [field] again?"
+6. Before saving, confirm all required fields back to the caller and get a yes.
+   If the caller corrects a name during confirmation, update it once and continue.
+7. Call the save_patient tool ONLY after every required field has been collected
    and the caller explicitly confirms the complete registration summary
-7. On success: "You're all set, [First Name]! Thank you for registering."
-8. On error: relay the error message you got back and ask the caller to correct that field
+8. On success: "You're all set, [First Name]! Thank you for registering."
+9. On error: relay the error message you got back and ask the caller to correct that field
 
 SPEAKING PACE:
 - If the caller asks you to speak slower, faster, or back to normal, call the
@@ -699,7 +702,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     logger.info("Agent session started: room=%s", getattr(ctx.room, "name", "unknown"))
     greeting = session.say(
         "Hello! Welcome to our clinic. I'm here to help you register as a new patient. "
-        "Can I start by getting your first name? Please say it once, then spell it letter by letter.",
+        "Can I start by getting your first name?",
         allow_interruptions=ALLOW_INTERRUPTIONS,
     )
     await close_future
