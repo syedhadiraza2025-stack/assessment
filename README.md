@@ -43,7 +43,7 @@ change the required patient-registration behavior.
 | Telephony | LiveKit Cloud SIP / trial phone number |
 | VAD / endpointing | Deepgram VAD events + STT endpointing; optional Silero when memory allows |
 | Noise suppression | Disabled in low-memory Render mode; optional LiveKit Cloud BVC |
-| STT | Deepgram nova-2 |
+| STT | Deepgram nova-3 |
 | LLM | Groq, default `openai/gpt-oss-120b` |
 | TTS | ElevenLabs |
 | Backend | FastAPI |

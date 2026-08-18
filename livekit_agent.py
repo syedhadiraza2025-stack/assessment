@@ -49,6 +49,8 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 ENABLE_LOCAL_SILERO_VAD = env_bool("ENABLE_LOCAL_SILERO_VAD", False)
 ENABLE_NOISE_CANCELLATION = env_bool("ENABLE_NOISE_CANCELLATION", False)
+ALLOW_INTERRUPTIONS = env_bool("ALLOW_INTERRUPTIONS", False)
+LOG_INTERIM_TRANSCRIPTS = env_bool("LOG_INTERIM_TRANSCRIPTS", False)
 AUDIO_SAMPLE_RATE = int(os.getenv("LIVEKIT_AUDIO_SAMPLE_RATE", "16000"))
 AUDIO_FRAME_SIZE_MS = int(os.getenv("LIVEKIT_AUDIO_FRAME_SIZE_MS", "100"))
 
@@ -223,7 +225,7 @@ class IntakeAgent(Agent):
         super().__init__(
             instructions=INSTRUCTIONS,
             stt=deepgram.STT(
-                model=os.getenv("DEEPGRAM_MODEL", "nova-2"),
+                model=os.getenv("DEEPGRAM_MODEL", "nova-3"),
                 language=os.getenv("DEEPGRAM_LANGUAGE", "en-US"),
                 interim_results=True,
                 smart_format=True,
@@ -245,6 +247,7 @@ class IntakeAgent(Agent):
             turn_detection="vad" if vad_model else "stt",
             min_endpointing_delay=0.25,
             max_endpointing_delay=2.0,
+            allow_interruptions=ALLOW_INTERRUPTIONS,
         )
 
     @function_tool
@@ -530,7 +533,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             event.is_final,
             event.transcript,
         )
-        if event.transcript:
+        if event.transcript and (event.is_final or LOG_INTERIM_TRANSCRIPTS):
             dashboard_write(
                 "user transcript",
                 lambda db: crud.create_transcript_message(
@@ -562,7 +565,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         )
         session.say(
             "I heard something, but I couldn't make out the words. Could you please repeat that?",
-            allow_interruptions=True,
+            allow_interruptions=ALLOW_INTERRUPTIONS,
         )
 
     @session.on("agent_state_changed")
@@ -695,7 +698,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     greeting = session.say(
         "Hello! Welcome to our clinic. I'm here to help you register as a new patient. "
         "Can I start by getting your first name?",
-        allow_interruptions=True,
+        allow_interruptions=ALLOW_INTERRUPTIONS,
     )
     await close_future
 

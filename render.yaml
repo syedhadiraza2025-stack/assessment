@@ -43,6 +43,8 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: openai/gpt-oss-120b
+      - key: DEEPGRAM_MODEL
+        value: nova-3
       - key: DEEPGRAM_API_KEY
         sync: false
       - key: ELEVENLABS_API_KEY
@@ -52,6 +54,10 @@ services:
       - key: ENABLE_LOCAL_SILERO_VAD
         value: false
       - key: ENABLE_NOISE_CANCELLATION
+        value: false
+      - key: ALLOW_INTERRUPTIONS
+        value: false
+      - key: LOG_INTERIM_TRANSCRIPTS
         value: false
       - key: LIVEKIT_AUDIO_SAMPLE_RATE
         value: 16000

@@ -8,3 +8,5 @@ email-validator>=2.0.0
 python-dotenv>=1.0.0
 httpx>=0.24.0
 livekit-agents[deepgram,elevenlabs,groq]~=1.0
+livekit-plugins-silero~=1.6
+livekit-plugins-noise-cancellation~=0.3
