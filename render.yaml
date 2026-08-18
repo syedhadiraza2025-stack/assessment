@@ -49,3 +49,17 @@ services:
         sync: false
       - key: ELEVENLABS_VOICE_ID
         value: EXAVITQu4vr4xnSDxMaL
+      - key: ENABLE_LOCAL_SILERO_VAD
+        value: false
+      - key: ENABLE_NOISE_CANCELLATION
+        value: false
+      - key: LIVEKIT_AUDIO_SAMPLE_RATE
+        value: 16000
+      - key: LIVEKIT_AUDIO_FRAME_SIZE_MS
+        value: 100
+      - key: GROQ_MAX_COMPLETION_TOKENS
+        value: 220
+      - key: DEEPGRAM_ENDPOINTING_MS
+        value: 350
+      - key: DEEPGRAM_UTTERANCE_END_MS
+        value: 1000

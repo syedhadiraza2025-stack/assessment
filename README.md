@@ -41,8 +41,8 @@ change the required patient-registration behavior.
 | Layer | Technology |
 | --- | --- |
 | Telephony | LiveKit Cloud SIP / trial phone number |
-| VAD | Silero via LiveKit Agents |
-| Noise suppression | LiveKit Cloud BVC |
+| VAD / endpointing | Deepgram VAD events + STT endpointing; optional Silero when memory allows |
+| Noise suppression | Disabled in low-memory Render mode; optional LiveKit Cloud BVC |
 | STT | Deepgram nova-2 |
 | LLM | Groq, default `openai/gpt-oss-120b` |
 | TTS | ElevenLabs |

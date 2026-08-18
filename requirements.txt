@@ -7,5 +7,4 @@ pydantic-settings>=2.0.0
 email-validator>=2.0.0
 python-dotenv>=1.0.0
 httpx>=0.24.0
-livekit-agents[deepgram,elevenlabs,groq,silero,turn-detector]~=1.0
-livekit-plugins-noise-cancellation~=0.1
+livekit-agents[deepgram,elevenlabs,groq]~=1.0

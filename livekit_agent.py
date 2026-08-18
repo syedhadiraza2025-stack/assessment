@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """LiveKit Agents worker for the patient intake voice pipeline.
 
-Pipeline: caller audio -> Silero VAD -> Deepgram STT -> Groq LLM -> ElevenLabs TTS,
-with LiveKit Cloud noise cancellation on the input track. Tool calls write straight
-to the same PostgreSQL database the FastAPI backend (main.py) serves over REST.
+Pipeline: caller audio -> Deepgram STT/VAD events -> Groq LLM -> ElevenLabs TTS.
+Optional local Silero VAD and LiveKit noise cancellation can be enabled when the
+host has enough memory. Tool calls write straight to the same PostgreSQL database
+the FastAPI backend (main.py) serves over REST.
 
 Run modes:
   python livekit_agent.py console   # talk to it locally via your mic, no telephony
@@ -24,7 +25,7 @@ from pydantic import ValidationError
 
 from livekit import agents
 from livekit.agents import Agent, AgentSession, RoomInputOptions, function_tool
-from livekit.plugins import deepgram, elevenlabs, groq, silero, noise_cancellation
+from livekit.plugins import deepgram, elevenlabs, groq
 
 from database import SessionLocal, init_database, safe_database_url
 import crud
@@ -37,6 +38,19 @@ logger = logging.getLogger("patient-intake-agent")
 
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")  # "Sarah" - Mature, Reassuring, Confident
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+ENABLE_LOCAL_SILERO_VAD = env_bool("ENABLE_LOCAL_SILERO_VAD", False)
+ENABLE_NOISE_CANCELLATION = env_bool("ENABLE_NOISE_CANCELLATION", False)
+AUDIO_SAMPLE_RATE = int(os.getenv("LIVEKIT_AUDIO_SAMPLE_RATE", "16000"))
+AUDIO_FRAME_SIZE_MS = int(os.getenv("LIVEKIT_AUDIO_FRAME_SIZE_MS", "100"))
 
 INSTRUCTIONS = """You are a professional patient intake assistant for a healthcare clinic. Your goal is to collect patient registration information through natural, friendly conversation.
 
@@ -161,16 +175,76 @@ def text_from_chat_item(item: Any) -> str:
     return str(text or "").strip()
 
 
+def create_vad():
+    if not ENABLE_LOCAL_SILERO_VAD:
+        logger.info("Local Silero VAD disabled; using Deepgram VAD events and STT endpointing.")
+        return None
+    try:
+        from livekit.plugins import silero
+
+        logger.info("Loading local Silero VAD.")
+        return silero.VAD.load(
+            min_speech_duration=0.08,
+            min_silence_duration=0.45,
+            prefix_padding_duration=0.2,
+            max_buffered_speech=15.0,
+            force_cpu=True,
+        )
+    except Exception as error:
+        logger.warning("Silero VAD unavailable; falling back to STT turn detection: %s", error)
+        return None
+
+
+def create_room_input_options() -> RoomInputOptions:
+    noise_processor = None
+    if ENABLE_NOISE_CANCELLATION:
+        try:
+            from livekit.plugins import noise_cancellation
+
+            noise_processor = noise_cancellation.BVC()
+        except Exception as error:
+            logger.warning("Noise cancellation unavailable; continuing without BVC: %s", error)
+    else:
+        logger.info("LiveKit noise cancellation disabled for low-memory worker mode.")
+
+    return RoomInputOptions(
+        audio_sample_rate=AUDIO_SAMPLE_RATE,
+        audio_num_channels=1,
+        audio_frame_size_ms=AUDIO_FRAME_SIZE_MS,
+        noise_cancellation=noise_processor,
+    )
+
+
 class IntakeAgent(Agent):
     def __init__(self, *, call_id: Optional[str] = None, current_patient_id: Optional[dict[str, Optional[str]]] = None) -> None:
         self.call_id = call_id
         self.current_patient_id = current_patient_id if current_patient_id is not None else {"value": None}
+        vad_model = create_vad()
         super().__init__(
             instructions=INSTRUCTIONS,
-            stt=deepgram.STT(model="nova-2", language="en"),
-            llm=groq.LLM(model=GROQ_MODEL),
-            tts=elevenlabs.TTS(voice_id=ELEVENLABS_VOICE_ID, api_key=os.getenv("ELEVENLABS_API_KEY")),
-            vad=silero.VAD.load(),
+            stt=deepgram.STT(
+                model=os.getenv("DEEPGRAM_MODEL", "nova-2"),
+                language=os.getenv("DEEPGRAM_LANGUAGE", "en-US"),
+                interim_results=True,
+                smart_format=True,
+                endpointing_ms=int(os.getenv("DEEPGRAM_ENDPOINTING_MS", "350")),
+                vad_events=True,
+                utterance_end_ms=int(os.getenv("DEEPGRAM_UTTERANCE_END_MS", "1000")),
+            ),
+            llm=groq.LLM(
+                model=GROQ_MODEL,
+                max_completion_tokens=int(os.getenv("GROQ_MAX_COMPLETION_TOKENS", "220")),
+            ),
+            tts=elevenlabs.TTS(
+                voice_id=ELEVENLABS_VOICE_ID,
+                api_key=os.getenv("ELEVENLABS_API_KEY"),
+                sync_alignment=False,
+                enable_logging=False,
+            ),
+            vad=vad_model,
+            turn_detection="vad" if vad_model else "stt",
+            min_endpointing_delay=0.25,
+            max_endpointing_delay=2.0,
         )
 
     @function_tool
@@ -615,9 +689,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await session.start(
         agent=IntakeAgent(call_id=call_id, current_patient_id=current_patient_id),
         room=ctx.room,
-        room_input_options=RoomInputOptions(
-            noise_cancellation=noise_cancellation.BVC(),
-        ),
+        room_input_options=create_room_input_options(),
     )
     logger.info("Agent session started: room=%s", getattr(ctx.room, "name", "unknown"))
     greeting = session.say(
